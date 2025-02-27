@@ -5,7 +5,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 # Клавиатура для подписки на канал
 subscription_keyboard = InlineKeyboardMarkup(
     inline_keyboard=[
-        [InlineKeyboardButton(text="Подписаться на канал", url="https://t.me/EMRN_CHANNEL")],
+        [InlineKeyboardButton(text="Подписаться на канал", url="https://t.me/")],
         [InlineKeyboardButton(text="Я подписался", callback_data='sub_channel')]
     ]
 )
