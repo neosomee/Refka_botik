@@ -212,7 +212,7 @@ async def handle_referral_program(message: types.Message):
 
     if user:
         # Генерируем реферальную ссылку
-        bot_name = "EMRN_BOT"
+        bot_name = 'nameBot'
         referral_link = f"https://t.me/{bot_name}?start={user_id}"
 
         # Формируем текст для отображения информации о рефералах
