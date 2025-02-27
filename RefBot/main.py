@@ -24,9 +24,9 @@ class WithdrawalStates(StatesGroup):
 
 
 # Конфигурация
-TOKEN = '7842687451:AAHkZt8GlRbtyXMHfo7PC6UbQqXCTELjrz0'
-CHANNEL_ID = -1002350600965
-ADMIN_ID = 6466769330
+TOKEN = "TOKEN"
+CHANNEL_ID = "ID CHANNEL"
+ADMIN_ID = "ID ADMIN"
 
 # Инициализация хранилища
 
