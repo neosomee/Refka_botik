@@ -16,6 +16,7 @@ logging.basicConfig(level=logging.INFO)
 async def handle_start_command(message: types.Message, bot: Bot):
     """Обработчик команды /start."""
     user_id = message.from_user.id
+    username = message.from_user.username or "unknown"  
     user = await db.get_user(user_id)
 
     # Обработка реферальной ссылки
@@ -25,9 +26,13 @@ async def handle_start_command(message: types.Message, bot: Bot):
             referrer_id = int(referrer_id)
             if referrer_id != user_id:
                 if not user:
-                    await db.create_user(user_id, referrer_id)
+                    await db.create_user(user_id, username, referrer_id)  # Передаем username
                     await message.answer("Вы зарегистрированы по реферальной ссылке! Для продолжения напишите еще раз /start")
-                    await give_referral_bonus(referrer_id, user_id, bot)  # Передаем bot в give_referral_bonus
+
+                    # Начисляем бонус рефереру за переход по ссылке
+                    await give_referral_bonus_on_link(referrer_id, bot)
+
+                    # Не начисляем бонус здесь, а ждем подписки реферала
                 else:
                     await message.answer("Вы уже зарегистрированы.")
             else:
@@ -38,7 +43,7 @@ async def handle_start_command(message: types.Message, bot: Bot):
             return
 
     if not user:
-        await db.create_user(user_id)
+        await db.create_user(user_id, username)  # Передаем username
         await message.answer("Привет! Добро пожаловать в бот.")
         await message.answer("Чтобы использовать бота, вам нужно подписаться на наш канал.")
         await message.answer("Чтобы продолжить, подпишитесь на наш канал:", reply_markup=subscription_keyboard)
@@ -48,6 +53,22 @@ async def handle_start_command(message: types.Message, bot: Bot):
             await message.answer("Добро пожаловать! Вы уже подписаны и можете пользоваться ботом.", reply_markup=main_menu_keyboard)
         else:
             await message.answer("Чтобы продолжить, подпишитесь на наш канал:", reply_markup=subscription_keyboard)
+
+async def give_referral_bonus_on_link(referrer_id: int, bot: Bot):
+    """Начисление бонуса рефереру за переход по реферальной ссылке."""
+    try:
+        bonus_amount = 0.5  # 0.5 рубля за переход по ссылке
+
+        # Начисляем бонус рефереру
+        await db.update_balance(referrer_id, bonus_amount)
+
+        # Уведомляем реферера
+        await bot.send_message(referrer_id, f"По вашей реферальной ссылке перешли! Вам начислено {bonus_amount} рублей.")
+
+    except Exception as e:
+        logging.exception("Ошибка при начислении бонуса за переход по ссылке")
+
+
 
 async def handle_sub_channel(callback: types.CallbackQuery, bot: Bot, *, channel_id):
     """Обработчик нажатия кнопки 'Я подписался'."""
@@ -72,37 +93,43 @@ async def handle_sub_channel(callback: types.CallbackQuery, bot: Bot, *, channel
             return
 
         if chat_member.status != 'left':
-            # Начисляем бонус пользователю за подписку
-            await db.update_balance(user_id, 1.0)
-            await db.mark_as_subscribed(user_id)
+            # Проверяем, был ли уже начислен бонус за подписку
+            if not user.get('subscription_bonus_received', False):
+                # Начисляем бонус пользователю за подписку
+                await db.update_balance(user_id, 1.0)
+                await db.mark_as_subscribed(user_id)
 
-            # Отмечаем, что бонус за подписку начислен
-            await db.update_subscription_bonus_received(user_id)
+                # Отмечаем, что бонус за подписку начислен
+                await db.update_subscription_bonus_received(user_id)
 
-            # Получаем ID реферера
-            referrer_id = await db.get_referrer_id(user_id)
+                # Выводим сообщение о подписке и получении бонуса
+                await bot.send_message(
+                    chat_id=callback.message.chat.id,
+                    text="Спасибо за подписку! Вам начислен бонус 1 рубль.",
+                    reply_markup=main_menu_keyboard
+                )
 
-            if referrer_id:
-                # Начисляем бонус рефереру за реферала 1 уровня
-                await db.update_balance(referrer_id, 1.0)
+                # Получаем ID реферера
+                referrer_id = await db.get_referrer_id(user_id)
 
-                # Увеличиваем счетчик рефералов первого уровня
-                await db.add_referral(referrer_id, 1)
+                if referrer_id:
+                    # Проверяем, был ли уже начислен бонус рефереру за этого реферала
+                    if not await db.check_referral_bonus(referrer_id, user_id):
+                        # Начисляем бонус рефереру за реферала 1 уровня
+                        await db.update_balance(referrer_id, 1.0)
 
-                # Уведомляем реферера
-                await bot.send_message(referrer_id, f"Ваш реферал подписался и получил бонус! Вам начислено 1.0 рублей.")
+                        # Увеличиваем счетчик рефералов первого уровня
+                        await db.add_referral(referrer_id, 1)
 
-            await bot.send_message(
-                chat_id=callback.message.chat.id,
-                text="Спасибо за подписку! Теперь вы можете пользоваться ботом.",
-                reply_markup=main_menu_keyboard
-            )
+                        # Отмечаем, что бонус рефереру начислен
+                        await db.mark_referral_bonus(referrer_id, user_id)
 
-            # Обновляем баланс для вывода средств
-            await bot.send_message(
-                chat_id=callback.message.chat.id,
-                text="Ваш баланс для вывода средств обновлен.",
-            )
+                        # Уведомляем реферера
+                        await bot.send_message(referrer_id, f"Ваш реферал подписался и получил бонус! Вам начислено 1.0 рублей.")
+                    else:
+                        await bot.send_message(referrer_id, f"Вы уже получили бонус за этого реферала.")
+            else:
+                await callback.message.answer("Вы уже получили бонус за подписку на канал.", reply_markup=main_menu_keyboard)
         else:
             await callback.message.edit_text(
                 "Вы еще не подписаны на канал. Пожалуйста, подпишитесь.",
@@ -196,14 +223,14 @@ async def handle_profile(message: types.Message):
         profile_info = (
             " Ваш профиль:\n\n"
             f"- 🆔 Мой ID: {user_id}\n"
-            f"- 🫂 Рефералов всего: {user['referral_level1']} чел.\n"
+            f"- 🫂 Рефералов первого уровня: {user['referral_level1']} чел.\n"
             f"- 🎁 Получено бонусов: {user['bonus_count']} (сколько раз был получен бонус)\n"
             f"- 💳 Баланс: {round(user['balance'], 2)} руб.\n"
+            f"- 💸 Выплачено: {round(user.get('paid_amount', 0), 2)} руб.\n"
         )
         await message.answer(profile_info)
     else:
         await message.answer("Профиль не найден.")
-
 
 async def handle_referral_program(message: types.Message):
     """Обработчик для отображения информации о партнерской программе."""
@@ -212,7 +239,7 @@ async def handle_referral_program(message: types.Message):
 
     if user:
         # Генерируем реферальную ссылку
-        bot_name = 'nameBot'
+        bot_name = "reffka_nahui_bot"
         referral_link = f"https://t.me/{bot_name}?start={user_id}"
 
         # Формируем текст для отображения информации о рефералах
@@ -224,4 +251,3 @@ async def handle_referral_program(message: types.Message):
         await message.answer(referral_info)
     else:
         await message.answer("Профиль не найден.")
-

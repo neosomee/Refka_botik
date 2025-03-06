@@ -1,6 +1,8 @@
+# main.py
+import aiosqlite
 import asyncio
 import logging
-
+import app.db as db
 from aiogram import Bot, Dispatcher, Router, types
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -12,11 +14,14 @@ from aiogram.filters import Command, BaseFilter, StateFilter
 from app.db import delete_withdrawal, get_user, create_db, init_bonus_settings, update_user_balance, create_users_table, add_withdrawal, get_user_balance, get_withdrawals, get_saved_payeer_id, save_payeer_id, create_payeer_wallets_table
 from app.referals import (
     handle_start_command, handle_sub_channel, handle_get_bonus,
-    handle_profile, handle_referral_program
+    handle_profile, handle_referral_program, give_referral_bonus
 )
+
+from app.db import DATABASE_FILE
+from app.db import mark_notification_sent, get_new_paid_users
 from app.keyboards import (
     main_menu_keyboard, 
-    admin_menu_keyboard, create_delete_user_keyboard)
+    admin_menu_keyboard, create_withdrawal_keyboard)
 
 class WithdrawalStates(StatesGroup):
     payeer_id = State()
@@ -24,9 +29,9 @@ class WithdrawalStates(StatesGroup):
 
 
 # Конфигурация
-TOKEN = "TOKEN"
-CHANNEL_ID = "ID CHANNEL"
-ADMIN_ID = "ID ADMIN"
+TOKEN = "7892060466:AAHqX21vv-8h7q5hMVI-dvCvRtUxZVAq0sU"
+CHANNEL_ID = -1002247583117
+ADMIN_ID = 6521061663
 
 # Инициализация хранилища
 
@@ -70,7 +75,7 @@ async def start_command_handler(message: types.Message, bot: Bot):
 # Обработчик callback для кнопки "Я подписался"
 @router.callback_query(lambda callback: callback.data == "sub_channel")
 async def sub_channel_handler(callback: types.CallbackQuery, bot: Bot):
-    await handle_sub_channel(callback, bot, channel_id=CHANNEL_ID)  # Передаем bot в handle_sub_channel
+    await handle_sub_channel(callback, bot, channel_id=CHANNEL_ID)
 
 # Обработчики для кнопок меню
 @router.message(MyTextFilter("профиль"))
@@ -142,9 +147,17 @@ async def get_payeer_id(message: types.Message, state: FSMContext):
     if await state.get_state():
         await state.clear()
     
-    await save_payeer_id(message.from_user.id, message.text)
+    # Сохраняем Payeer ID и username
+    await save_payeer_id(
+        user_id=message.from_user.id,
+        payeer_id=message.text,
+        username=message.from_user.username or "unknown"
+    )
+    
     await state.set_state(WithdrawalStates.amount)
     await message.answer("Введите сумму вывода:")
+
+
 
 @router.message(WithdrawalStates.amount)
 async def get_amount(message: types.Message, state: FSMContext):
@@ -218,7 +231,6 @@ async def admin_command_handler(message: types.Message, state: FSMContext):
     else:
         await message.answer("У вас нет доступа к админ-меню.")
 
-
 # Обработчики админ-меню
 @router.callback_query(lambda callback: callback.data == "back_to_admin")
 async def back_to_admin_handler(callback: types.CallbackQuery):
@@ -227,57 +239,90 @@ async def back_to_admin_handler(callback: types.CallbackQuery):
     else:
         await callback.answer("У вас нет доступа к админ-меню.")
 
-@router.callback_query(lambda callback: callback.data == "view_withdrawals", AdminFilter())
+@router.callback_query(lambda callback: callback.data == "view_withdrawals")
 async def view_withdrawals_handler(callback: types.CallbackQuery):
     try:
-        withdrawals = await get_withdrawals()
+        withdrawals = await db.get_withdrawals_for_admin()
 
         if not withdrawals:
             await callback.message.edit_text("Нет активных заявок на вывод средств.")
             return
 
-        text = "Активные заявки на вывод средств:\n\n"
-        user_ids = []
-        for i, (user_id, payeer_id, amount) in enumerate(withdrawals):
-            text += f"{i+1}. User ID: {user_id}, Кошелек: {payeer_id}, Сумма: {amount}\n"
-            user_ids.append(user_id)
+        # Ожидаем выполнения асинхронной функции
+        keyboard = await create_withdrawal_keyboard(withdrawals)
 
-        keyboard = create_delete_user_keyboard(user_ids)
-
-        await callback.message.edit_text(text, reply_markup=keyboard)
+        await callback.message.edit_text("Активные заявки на вывод средств:", reply_markup=keyboard)
 
     except Exception as e:
         logging.error(f"Ошибка в view_withdrawals_handler: {e}")
         await callback.answer("Произошла ошибка при обработке запроса. Попробуйте позже.")
 
-@router.callback_query(lambda callback: callback.data.startswith("delete_"))
-async def delete_user_callback_handler(callback: types.CallbackQuery):
+async def send_payment_message(user_id: int, amount: float):
+    """Отправка сообщения о выплате в Telegram-канал."""
+    user = await db.get_user(user_id)
+    username = user.get('username', "unknown")
+    
+    message_text = f"@{username} (id:) {user_id }вывел {amount} руб на PAYEER."
+    await bot.send_message(CHANNEL_ID, message_text)
+
+
+
+@router.callback_query(lambda callback: callback.data.startswith("pay_"))
+async def pay_withdrawal_callback(callback: types.CallbackQuery):
+    data = callback.data.split("_")
+    user_id = int(data[1])
+    amount = float(data[2])
+    
+    # Обновляем выплаченную сумму
+    await db.update_paid_amount(user_id, amount)
+    
+    # Удаляем заявку на вывод
+    await db.delete_withdrawal(user_id)
+    
+    await callback.answer("Оплачено!")
+    
+    # Отправляем уведомление о новой выплате
+    await send_payment_message(user_id, amount)
+    
+    if str(callback.from_user.id) == str(ADMIN_ID):  # Проверка прав
+        await callback.answer("Рассылка начата...")
+        
+        try:
+            await callback.message.edit_text("Рассылка завершена.")
+        except Exception as e:
+            await callback.message.edit_text(f"Ошибка при рассылке: {e}")
+    else:
+        await callback.answer("У вас нет доступа к этой функции.")
+    
+    # Обновляем список заявок
+    await view_withdrawals_handler(callback)
+
+
+
+@router.callback_query(lambda callback: callback.data.startswith("delete_user_"))
+async def delete_user_callback(callback: types.CallbackQuery):
     try:
-        user_id = int(callback.data.split("_")[1])  # Получаем ID пользователя из callback_data
-
-        await delete_withdrawal(user_id)  # Удаляем заявку пользователя
-        await callback.message.answer(f"Заявка пользователя с ID {user_id} удалена.")
-
-        # Обновляем список заявок после удаления
+        user_id = int(callback.data.split("_")[2]) 
+        
+        await db.delete_withdrawal(user_id)
+        
+        await callback.answer(f"Пользователь с ID {user_id} удален.")
+        
         await view_withdrawals_handler(callback)
     except Exception as e:
-        logging.error(f"Ошибка в delete_user_callback_handler: {e}")
+        logging.error(f"Ошибка при удалении пользователя: {e}")
         await callback.answer("Произошла ошибка при удалении пользователя.")
 
 
-
 async def main():
-    # await on_startup(bot)
     await create_db()
-    await init_bonus_settings()  # Инициализируем настройки бонуса
-    await create_users_table()
-    await create_payeer_wallets_table()
-    # Регистрируем роутер
+    await init_bonus_settings() 
+    await create_payeer_wallets_table() 
     dp.include_router(router)
     
-    # Запускаем polling
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot, skip_updates=True)
+
 
 if __name__ == "__main__":
     try:
