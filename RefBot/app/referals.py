@@ -182,7 +182,7 @@ async def handle_sub_channel(callback: types.CallbackQuery, bot: Bot, channel_id
             else:
                 inline_keyboard = InlineKeyboardMarkup(
                     inline_keyboard=[
-                        [InlineKeyboardButton(text="✔️Подписаться", url="https://t.me/EMRN_CHANNEL")],
+                        [InlineKeyboardButton(text="✔️Подписаться", url="")],
                         [InlineKeyboardButton(text="✔️Я подписался", callback_data="sub_channel")]
                     ]
                 )
@@ -288,7 +288,7 @@ async def handle_referral_program(message: types.Message):
 
     if user:
         # Генерируем реферальную ссылку
-        bot_name = "EMRN_BOT"
+        bot_name = ""
         referral_link = f"https://t.me/{bot_name}?start={user_id}"
 
         # Формируем текст для отображения информации о рефералах
