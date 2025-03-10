@@ -36,10 +36,10 @@ class MailingState(StatesGroup):
     confirming = State()
 
 # Конфигурация
-TOKEN = "7842687451:AAHkZt8GlRbtyXMHfo7PC6UbQqXCTELjrz0"
-CHANNEL_ID = -1002350600965
-ADMIN_ID = [6466769330, 6521061663]
-CHANNEL_FOR_PAYMENT = -1002348427651
+TOKEN = 
+CHANNEL_ID = 
+ADMIN_ID = []
+CHANNEL_FOR_PAYMENT = 
 
 # Инициализация хранилища
 storage = MemoryStorage()
