@@ -1,9 +1,10 @@
+# db.py
+
 import aiosqlite
 import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 
 DATABASE_FILE = 'bot.db'
 
@@ -23,7 +24,8 @@ async def create_db():
                 referrer_id INTEGER,
                 paid_amount REAL DEFAULT 0,
                 sent_notification INTEGER DEFAULT 0,
-                username TEXT
+                username TEXT,
+                is_user BOOLEAN DEFAULT FALSE
             )
         """)
 
@@ -41,7 +43,6 @@ async def create_db():
             )
         """)
 
-        # Добавляем создание таблицы referral_bonuses
         await db.execute("""
             CREATE TABLE IF NOT EXISTS referral_bonuses (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -51,12 +52,10 @@ async def create_db():
             )
         """)
 
-        await create_bonus_settings()  # Создание таблицы для настроек бонуса
+        await create_bonus_settings()
         await create_withdrawals_table()
         await create_payeer_wallets_table()
-        
 
-        # Создаем запись для статистики, если её нет
         await db.execute("INSERT INTO bot_stats (total_users, total_paid) SELECT 0, 0 WHERE NOT EXISTS (SELECT 1 FROM bot_stats)")
 
         await db.commit()
@@ -77,13 +76,13 @@ async def init_bonus_settings():
     """Инициализация настроек бонуса."""
     bonus_settings = await get_bonus_settings()
     if not bonus_settings:
-        await update_bonus_settings(1.0, 24)  # Инициализируем настройки по умолчанию
+        await update_bonus_settings(1.0, 24)
 
 async def get_user(user_id: int):
     """Получение информации о пользователе."""
     async with aiosqlite.connect(DATABASE_FILE) as db:
         async with db.execute("""
-            SELECT user_id, balance, referral_level1, bonus, is_subscribed, bonus_count, last_bonus_time, subscription_bonus_received, referrer_id, paid_amount, username
+            SELECT user_id, balance, referral_level1, bonus, is_subscribed, bonus_count, last_bonus_time, subscription_bonus_received, referrer_id, paid_amount, username, is_user
             FROM users WHERE user_id = ?
         """, (user_id,)) as cursor:
             result = await cursor.fetchone()
@@ -98,48 +97,41 @@ async def get_user(user_id: int):
                     "last_bonus_time": result[6],
                     "subscription_bonus_received": result[7],
                     "referrer_id": result[8],
-                    "paid_amount": result[9],  # Добавлено поле paid_amount
-                    "username": result[10]  # Добавлено поле username
+                    "paid_amount": result[9],
+                    "username": result[10],
+                    "is_user": result[11]
                 }
             return None
-
-
-
 
 async def mark_as_subscribed(user_id: int):
     """Отметить, что пользователь подписался и бонус начислен."""
     async with aiosqlite.connect(DATABASE_FILE) as db:
-        # Проверяем, не был ли уже начислен бонус
         cursor = await db.execute("SELECT subscription_bonus_received FROM users WHERE user_id = ?", (user_id,))
         result = await cursor.fetchone()
 
-        if result and not result[0]:  # Если бонус еще не был получен
+        if result and not result[0]:
             await db.execute("UPDATE users SET is_subscribed = TRUE, subscription_bonus_received = TRUE WHERE user_id = ?", (user_id,))
             await db.commit()
-            return True  # Возвращаем True, чтобы показать, что бонус был начислен
+            return True
         else:
-            return False  # Возвращаем False, если бонус уже был получен
-
+            return False
 
 async def create_user(user_id: int, username: str = None, referrer_id: int = None):
     """Создание нового пользователя."""
     try:
         async with aiosqlite.connect(DATABASE_FILE) as db:
-            await db.execute("INSERT INTO users (user_id, balance, referrer_id, username) VALUES (?, ?, ?, ?)", (user_id, 0.0, referrer_id, username))
+            await db.execute("INSERT INTO users (user_id, balance, referrer_id, username, is_user) VALUES (?, ?, ?, ?, ?)", (user_id, 0.0, referrer_id, username, True))
             await db.commit()
-
-            # Обновляем статистику
             await update_bot_stats()
     except aiosqlite.Error as e:
         print(f"Ошибка при создании пользователя: {e}")
-
 
 
 async def update_bot_stats():
     """Обновление статистики бота."""
     try:
         async with aiosqlite.connect(DATABASE_FILE) as db:
-            cursor = await db.execute("SELECT COUNT(*) FROM users")
+            cursor = await db.execute("SELECT COUNT(*) FROM users WHERE is_user = TRUE")
             total_users = (await cursor.fetchone())[0]
 
             cursor = await db.execute("SELECT total_paid FROM bot_stats")
@@ -156,18 +148,13 @@ async def update_bot_stats():
     except Exception as e:
         print(f"Непредвиденная ошибка при обновлении статистики бота: {e}")
 
-
 async def update_balance(user_id: int, amount: float):
     """Обновление баланса пользователя."""
     async with aiosqlite.connect(DATABASE_FILE) as db:
         await db.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
         await db.commit()
 
-async def update_referral_count(user_id: int):
-    """Обновление счетчика рефералов пользователя."""
-    async with aiosqlite.connect(DATABASE_FILE) as db:
-        await db.execute("UPDATE users SET referral_level1 = referral_level1 + 1 WHERE user_id = ?", (user_id,))
-        await db.commit()
+
 
 async def update_bonus_count(user_id: int):
     """Обновление счетчика бонусов пользователя."""
@@ -215,9 +202,7 @@ async def create_payeer_wallets_table():
             if "duplicate column name: username" in str(e):
                 print("Column username already exists in payeer_wallets")
             else:
-                raise  # Перебросить исключение, если это другая ошибка
-
-
+                raise
 
 async def get_saved_payeer_id(user_id: int):
     """Получение сохраненного Payeer ID пользователя."""
@@ -225,7 +210,6 @@ async def get_saved_payeer_id(user_id: int):
         async with db.execute("SELECT payeer_id FROM payeer_wallets WHERE user_id = ?", (user_id,)) as cursor:
             result = await cursor.fetchone()
             return result[0] if result else None
-
 
 async def set_payeer_wallet(user_id: int, payeer_id: str):
     """Установка Payeer кошелька для пользователя."""
@@ -239,7 +223,6 @@ async def get_payeer_id(user_id: int):
         async with db.execute("SELECT payeer_id FROM payeer_wallets WHERE user_id = ?", (user_id,)) as cursor:
             result = await cursor.fetchone()
             return result[0] if result else None
-
 
 async def create_users_table():
     async with aiosqlite.connect(DATABASE_FILE) as db:
@@ -276,13 +259,12 @@ async def add_user(user_id: int):
         except aiosqlite.Error as e:
             print(f"Ошибка при добавлении пользователя: {e}")
 
-# Пример использования
 async def process_manual_withdraw(user_id: int, amount: float):
-    await add_user(user_id)  # Добавляем пользователя, если его нет
+    await add_user(user_id)
     balance = await get_user_balance(user_id)
     if balance is not None:
         if balance >= amount:
-            await update_user_balance(user_id, -amount)  # Вычитаем сумму из баланса
+            await update_user_balance(user_id, -amount)
             print(f"Вывод средств для пользователя {user_id} успешно обработан.")
         else:
             print(f"Недостаточно средств у пользователя {user_id}.")
@@ -301,19 +283,17 @@ async def create_bot_stats():
                 )
             """)
             await db.commit()
-            
-            # Инициализируем запись в таблице, если она еще не создана
+
             async with db.execute("SELECT * FROM bot_stats") as cursor:
                 if not await cursor.fetchone():
                     await db.execute("INSERT INTO bot_stats (total_users, total_paid) VALUES (0, 0.0)")
                     await db.commit()
-                    
+
             print("Таблица статистики бота создана или уже существует.")
     except aiosqlite.Error as e:
         print(f"Ошибка при создании таблицы статистики бота: {e}")
     except Exception as e:
         print(f"Непредвиденная ошибка при создании таблицы статистики бота: {e}")
-
 
 async def get_bot_stats():
     """Получение статистики бота."""
@@ -337,12 +317,69 @@ async def get_bot_stats():
         print(f"Непредвиденная ошибка при получении статистики бота: {e}")
         return None
 
+async def update_subscription_bonus_received(user_id: int):
+    """Обновление флага о получении бонуса за подписку."""
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as db:
+            await db.execute("UPDATE users SET subscription_bonus_received = 1 WHERE user_id = ?", (user_id,))
+            await db.commit()
+            print(f"Флаг бонуса за подписку обновлен для пользователя {user_id}.")
+    except aiosqlite.Error as e:
+        print(f"Ошибка при обновлении флага бонуса за подписку: {e}")
+    except Exception as e:
+        print(f"Непредвиденная ошибка при обновлении флага бонуса за подписку: {e}")
 
+async def check_referral_bonus(referrer_id: int, user_id: int):
+    """Проверка, был ли уже начислен бонус рефереру за этого реферала."""
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as db:
+            async with db.execute("SELECT * FROM referral_bonuses WHERE referrer_id = ? AND user_id = ?", (referrer_id, user_id)) as cursor:
+                result = await cursor.fetchone()
+                bonus_given = bool(result)
+                logger.info(f"Проверка бонуса для реферера {referrer_id} и пользователя {user_id}: {bonus_given}")
+                return bonus_given
+    except aiosqlite.Error as e:
+        logger.error(f"Ошибка при проверке бонуса реферера: {e}")
+        return False
+
+async def mark_referral_bonus(referrer_id: int, user_id: int):
+    """Отметка о том, что бонус рефереру начислен."""
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as db:
+            await db.execute("INSERT INTO referral_bonuses (referrer_id, user_id) VALUES (?, ?)", (referrer_id, user_id))
+            await db.commit()
+            logger.info(f"Бонус рефереру {referrer_id} за пользователя {user_id} отмечен")
+    except aiosqlite.Error as e:
+        logger.error(f"Ошибка при отметке бонуса реферера: {e}")
+
+async def get_referrer_id(user_id: int):
+    """Получение ID реферера."""
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as db:
+            async with db.execute("SELECT referrer_id FROM users WHERE user_id = ?", (user_id,)) as cursor:
+                result = await cursor.fetchone()
+                if result:
+                    logger.info(f"Для пользователя {user_id} найден реферер с ID {result[0]}")
+                    return result[0]
+                logger.info(f"Для пользователя {user_id} реферер не найден")
+                return None
+    except aiosqlite.Error as e:
+        logger.error(f"Ошибка при получении ID реферера: {e}")
+        return None
+    
+    
 async def add_referral(user_id: int, level: int):
     """Добавление реферала пользователю."""
     async with aiosqlite.connect(DATABASE_FILE) as db:
         if level == 1:
             await db.execute("UPDATE users SET referral_level1 = referral_level1 + 1 WHERE user_id = ?", (user_id,))
+        await db.commit()
+
+
+async def update_referral_count(user_id: int):
+    """Обновление счетчика рефералов пользователя."""
+    async with aiosqlite.connect(DATABASE_FILE) as db:
+        await db.execute("UPDATE users SET referral_level1 = referral_level1 + 1 WHERE user_id = ?", (user_id,))
         await db.commit()
 
 async def add_bonus(user_id: int, amount: float):
@@ -385,7 +422,7 @@ async def get_channel_id():
 async def set_channel_id(channel_id: str):
     """Установка ID канала/чата."""
     async with aiosqlite.connect(DATABASE_FILE) as db:
-        await db.execute("DELETE FROM channel_settings")  # Очищаем старые данные
+        await db.execute("DELETE FROM channel_settings")
         await db.execute("INSERT INTO channel_settings (channel_id) VALUES (?)", (channel_id,))
         await db.commit()
 
@@ -413,55 +450,18 @@ async def get_bonus_settings():
                     "bonus_time": result[1]
                 }
             else:
-                await update_bonus_settings(1.0, 24)  # Инициализируем настройки по умолчанию
-                return await get_bonus_settings()  # Повторно получаем настройки
+                await update_bonus_settings(1.0, 24)
+                return await get_bonus_settings()
 
 async def update_bonus_settings(amount: float, time: int):
     """Обновление настроек бонуса."""
     async with aiosqlite.connect(DATABASE_FILE) as db:
-        await db.execute("DELETE FROM bonus_settings")  # Очищаем старые данные
+        await db.execute("DELETE FROM bonus_settings")
         await db.execute("INSERT INTO bonus_settings (bonus_amount, bonus_time) VALUES (?, ?)", (amount, time))
         await db.commit()
 
-async def get_referrer_id(user_id: int):
-    """Получение ID реферера."""
-    async with aiosqlite.connect(DATABASE_FILE) as db:
-        async with db.execute("SELECT referrer_id FROM users WHERE user_id = ?", (user_id,)) as cursor:
-            result = await cursor.fetchone()
-            if result:
-                return result[0]
-            return None
 
-async def update_subscription_bonus_received(user_id: int):
-    """Обновление флага о получении бонуса за подписку."""
-    try:
-        async with aiosqlite.connect(DATABASE_FILE) as db:
-            await db.execute("UPDATE users SET subscription_bonus_received = 1 WHERE user_id = ?", (user_id,))
-            await db.commit()
-            print(f"Флаг бонуса за подписку обновлен для пользователя {user_id}.")
-    except aiosqlite.Error as e:
-        print(f"Ошибка при обновлении флага бонуса за подписку: {e}")
-    except Exception as e:
-        print(f"Непредвиденная ошибка при обновлении флага бонуса за подписку: {e}")
 
-async def check_referral_bonus(referrer_id: int, user_id: int):
-    """Проверка, был ли уже начислен бонус рефереру за этого реферала."""
-    async with aiosqlite.connect(DATABASE_FILE) as db:
-        async with db.execute("SELECT * FROM referral_bonuses WHERE referrer_id = ? AND user_id = ?", (referrer_id, user_id)) as cursor:
-            result = await cursor.fetchone()
-            return bool(result)
-
-async def mark_referral_bonus(referrer_id: int, user_id: int):
-    """Отметка о том, что бонус рефереру начислен."""
-    async with aiosqlite.connect(DATABASE_FILE) as db:
-        await db.execute("INSERT INTO referral_bonuses (referrer_id, user_id) VALUES (?, ?)", (referrer_id, user_id))
-        await db.commit()
-
-async def update_bonus_count(user_id: int):
-    """Обновление счетчика бонусов пользователя."""
-    async with aiosqlite.connect(DATABASE_FILE) as db:
-        await db.execute("UPDATE users SET bonus_count = bonus_count + 1 WHERE user_id = ?", (user_id,))
-        await db.commit()
 
 
 async def create_withdrawals_table():
@@ -477,7 +477,6 @@ async def create_withdrawals_table():
         """)
         await db.commit()
 
-
 async def add_withdrawal(user_id: int, payeer_id: str, amount: float):
     """Добавление заявки на вывод средств."""
     try:
@@ -490,14 +489,12 @@ async def add_withdrawal(user_id: int, payeer_id: str, amount: float):
     except Exception as e:
         logger.exception("Произошла непредвиденная ошибка при добавлении заявки на вывод")
 
-
 async def get_withdrawals():
     """Получение всех заявок на вывод средств."""
     try:
         async with aiosqlite.connect(DATABASE_FILE) as db:
             async with db.execute("SELECT id, user_id, payeer_id, amount FROM withdrawals") as cursor:
                 result = await cursor.fetchall()
-                # Преобразуем результат в список словарей
                 withdrawals = []
                 for row in result:
                     withdrawal = {
@@ -513,7 +510,7 @@ async def get_withdrawals():
         return None
     except Exception as e:
         logger.exception("Произошла непредвиденная ошибка при получении заявок на вывод")
-        
+
 async def get_withdrawals_for_admin():
     """Получение всех заявок на вывод средств для админки."""
     try:
@@ -538,7 +535,6 @@ async def get_withdrawals_for_admin():
     except Exception as e:
         logger.exception("Произошла непредвиденная ошибка при получении заявок на вывод")
 
-
 async def delete_withdrawal(user_id: int):
     """Удаление заявки на вывод средств по ID пользователя."""
     async with aiosqlite.connect(DATABASE_FILE) as db:
@@ -555,14 +551,11 @@ async def save_payeer_id(user_id: int, payeer_id: str, username: str):
         """, (user_id, payeer_id, username))
         await db.commit()
 
-
-
 async def save_username(user_id: int, username: str):
     """Сохранение username пользователя."""
     async with aiosqlite.connect(DATABASE_FILE) as db:
         await db.execute("UPDATE users SET username = ? WHERE user_id = ?", (username, user_id))
         await db.commit()
-
 
 async def update_paid_amount(user_id: int, amount: float):
     """Обновление выплаченной суммы для пользователя."""
@@ -581,21 +574,18 @@ async def get_new_paid_users():
     """Получение информации о новых выплатах."""
     async with aiosqlite.connect(DATABASE_FILE) as db:
         async with db.execute("""
-            SELECT user_id, paid_amount, username 
-            FROM users 
+            SELECT user_id, paid_amount, username
+            FROM users
             WHERE paid_amount > 0 AND sent_notification = 0
         """) as cursor:
             result = await cursor.fetchall()
             return result
-
-
 
 async def mark_notification_sent(user_id: int):
     """Отметка о том, что уведомление было отправлено."""
     async with aiosqlite.connect(DATABASE_FILE) as db:
         await db.execute("UPDATE users SET sent_notification = 1 WHERE user_id = ?", (user_id,))
         await db.commit()
-
 
 async def save_user_info(user_id: int, username: str):
     """Сохранение информации о пользователе."""
@@ -608,3 +598,4 @@ async def update_withdrawal_status(user_id: int, is_paid: bool):
     async with aiosqlite.connect(DATABASE_FILE) as db:
         await db.execute("UPDATE withdrawals SET is_paid = ? WHERE user_id = ?", (int(is_paid), user_id))
         await db.commit()
+
