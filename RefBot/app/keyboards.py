@@ -8,7 +8,7 @@ from app.db import get_payeer_id
 # Клавиатура для подписки на канал
 subscription_keyboard = InlineKeyboardMarkup(
     inline_keyboard=[
-        [InlineKeyboardButton(text="☑️ Подписаться на канал", url="https://t.me/EMRN_CHANNEL/3")],
+        [InlineKeyboardButton(text="☑️ Подписаться на канал", url="")],
         [InlineKeyboardButton(text="✅ Я подписался", callback_data='sub_channel')]
     ]
 )
